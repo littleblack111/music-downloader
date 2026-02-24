@@ -1,0 +1,35 @@
+[package]
+name = "squid-downloader"
+version = "0.1.0"
+edition = "2021"
+description = "A CLI tool for downloading high-quality music from Tidal"
+authors = ["Squid Downloader"]
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "color", "suggestions"] }
+tokio = { version = "1.42", features = ["full"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+colored = "2.1"
+tabled = "0.17"
+thiserror = "1.0"
+base64 = "0.22"
+regex = "1.11"
+url = "2.5"
+sanitize-filename = "0.6"
+strsim = "0.11"
+csv = "1.3"
+num_cpus = "1.17.0"
+chrono = { version = "0.4.44", features = ["serde"] }
+indicatif = "0.18.4"
+futures = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
