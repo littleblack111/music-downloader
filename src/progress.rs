@@ -12,6 +12,7 @@ pub struct MatchedTrack {
     #[serde(rename = "trackArtist")]
     pub track_artist: String,
     pub album: Option<String>,
+    pub cover_url: Option<String>,
     pub confidence: f64,
     #[serde(rename = "csvIndex")]
     pub csv_index: usize,
@@ -45,6 +46,7 @@ pub struct CsvTrackInfo {
     pub isrc: Option<String>,
     #[serde(rename = "spotifyId")]
     pub spotify_id: Option<String>,
+    pub cover_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +152,9 @@ impl DownloadProgress {
                         .clone(),
                     album: track
                         .album
+                        .clone(),
+                    cover_url: track
+                        .cover_url
                         .clone(),
                     confidence,
                     csv_index,

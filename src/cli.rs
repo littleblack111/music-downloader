@@ -40,8 +40,17 @@ pub struct Cli {
     )]
     pub concurrent: Option<usize>,
 
-    #[arg(short = 'd', long, global = true, help = "Directory organization mode", value_parser = ["playlist", "album", "artist", "flat"])]
+    #[arg(short = 'd', long, global = true, help = "Directory organization mode", value_parser = ["playlist", "album", "artist", "flat"], default_value = "playlist")]
     pub dir_mode: Option<String>,
+
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Embed cover art in downloaded files",
+        default_value_t = true
+    )]
+    pub embed_cover: bool,
 }
 
 #[derive(Subcommand)]
@@ -108,7 +117,7 @@ pub enum Commands {
     #[command(about = "Import and download tracks from CSV file")]
     Csv {
         #[arg(help = "Path to CSV file")]
-        file: PathBuf,
+        file: Option<String>,
 
         #[arg(
             short = 't',
@@ -140,6 +149,20 @@ pub enum Commands {
 
     #[command(about = "List available qualities and services")]
     List,
+
+    #[command(about = "Fix metadata and cover art for existing FLAC files")]
+    Fix {
+        #[arg(help = "Directory containing FLAC files")]
+        directory: PathBuf,
+        
+        #[arg(
+            short,
+            long,
+            default_value = "false",
+            help = "Also fix filenames based on metadata"
+        )]
+        fix_filenames: bool,
+    },
 }
 
 impl Cli {

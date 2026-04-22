@@ -597,8 +597,16 @@ async fn run_command(args: Cli, output_dir: &PathBuf, quality: AudioQuality, ser
             yes,
         } => {
             ensure_output_dir(output_dir).await?;
+            let csv_path_str = file.unwrap_or_else(|| "~/Downloads/My Spotify Library(1).csv".to_string());
+            let expanded_path = if csv_path_str.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_default();
+                csv_path_str.replacen("~", &home, 1)
+            } else {
+                csv_path_str
+            };
+            let file_path = std::path::PathBuf::from(expanded_path);
             download_from_csv(
-                &file,
+                &file_path,
                 threshold,
                 yes,
                 output_dir,
@@ -642,6 +650,13 @@ async fn run_command(args: Cli, output_dir: &PathBuf, quality: AudioQuality, ser
         Commands::List => {
             Ui::print_services();
             Ui::print_qualities();
+        }
+
+        Commands::Fix {
+            directory,
+            fix_filenames,
+        } => {
+            fix_metadata(&directory, fix_filenames).await?;
         }
     }
 
@@ -1558,6 +1573,9 @@ async fn download_from_csv(file: &PathBuf, threshold: f64, skip_confirm: bool, o
                                 duration: None,
                                 quality: None,
                                 cover_url: None,
+                                            album_id: None,
+                                            isrc: None,
+                                            spotify_id: None,
                             },
                         ),
                         confidence: m.confidence,
@@ -1826,8 +1844,8 @@ async fn download_from_csv(file: &PathBuf, threshold: f64, skip_confirm: bool, o
     }
 
     println!();
-    if !skip_confirm {
-        if !Ui::confirm(
+    if !skip_confirm
+        && !Ui::confirm(
             &format!(
                 "Download {} tracks with adaptive concurrency?",
                 tracks_to_download.len()
@@ -1840,7 +1858,6 @@ async fn download_from_csv(file: &PathBuf, threshold: f64, skip_confirm: bool, o
                 .save_to_file(&progress_file)?;
             return Ok(());
         }
-    }
 
     Ui::print_info(
         &format!(
@@ -2327,4 +2344,9 @@ where
     }
 
     Err(last_error.unwrap_or(DownloadError::DownloadFailed("Max retries exceeded".to_string())))
+}
+
+
+async fn fix_metadata(_directory: &PathBuf, _fix_filenames: bool) -> Result<()> {
+    Ok(())
 }

@@ -9,10 +9,12 @@ use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 
-const API_BASE: &str = "https://triton.squid.wtf";
+const API_BASE: &str = "https://hund.qqdl.site";
 const FALLBACK_APIS: &[&str] = &[
-    "https://aether.squid.wtf",
-    "https://zeus.squid.wtf",
+    "https://katze.qqdl.site",
+    "https://maus.qqdl.site",
+    "https://vogel.qqdl.site",
+    "https://wolf.qqdl.site",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +42,20 @@ struct TidalTrack {
         default
     )]
     audio_quality: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    isrc: Option<String>,
+    #[serde(
+        rename = "spotifyId",
+        default
+    )]
+    spotify_id: Option<String>,
+    #[serde(
+        rename = "albumId",
+        default
+    )]
+    album_id: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +66,8 @@ struct TidalArtist {
 #[derive(Debug, Deserialize)]
 struct TidalAlbum {
     title: String,
+    #[serde(default)]
+    cover: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +85,20 @@ struct TrackInfoData {
         default
     )]
     audio_quality: Option<String>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    isrc: Option<String>,
+    #[serde(
+        rename = "spotifyId",
+        default
+    )]
+    spotify_id: Option<String>,
+    #[serde(
+        rename = "albumId",
+        default
+    )]
+    album_id: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +115,11 @@ struct TrackManifestData {
         default
     )]
     sample_rate: Option<u32>,
+    #[serde(
+        rename = "audioQuality",
+        default
+    )]
+    audio_quality: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +133,8 @@ struct AlbumData {
         default
     )]
     number_of_tracks: Option<u32>,
+    #[serde(default)]
+    cover: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,12 +159,17 @@ struct TidalCreator {
 struct ManifestJson {
     #[serde(default)]
     urls: Vec<String>,
+    #[serde(rename = "mimeType", default)]
+    mime_type: Option<String>,
 }
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static CURRENT_API_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone)]
 pub struct TidalService {
     client: Client,
-    api_index: usize,
 }
 
 impl TidalService {
@@ -133,17 +177,20 @@ impl TidalService {
         TidalService {
             client: Client::builder()
                 .user_agent("SquidDownloader/0.1.0")
+                .timeout(std::time::Duration::from_secs(15))
                 .build()
                 .unwrap(),
-            api_index: 0,
         }
     }
 
-    fn get_api_base(&self) -> &str {
-        if self.api_index == 0 {
+    fn get_api_base() -> &'static str {
+        let index = CURRENT_API_INDEX.load(Ordering::Relaxed);
+        if index == 0 {
             API_BASE
+        } else if index <= FALLBACK_APIS.len() {
+            FALLBACK_APIS[index - 1]
         } else {
-            FALLBACK_APIS[self.api_index - 1]
+            API_BASE
         }
     }
 
@@ -160,7 +207,12 @@ impl TidalService {
         }
     }
 
+    fn format_cover_url(uuid: Option<String>) -> Option<String> {
+        uuid.map(|id| format!("https://resources.tidal.com/images/{}/1280x1280.jpg", id.replace('-', "/")))
+    }
+
     fn map_track_to_info(track: TidalTrack) -> TrackInfo {
+        let cover = track.cover.or_else(|| track.album.as_ref().and_then(|a| a.cover.clone()));
         TrackInfo {
             id: track.id,
             title: track.title,
@@ -170,38 +222,80 @@ impl TidalService {
                 .unwrap_or_default(),
             album: track
                 .album
-                .map(|a| a.title),
+                .as_ref()
+                .map(|a| a.title.clone()),
             duration: track.duration,
             quality: track
                 .audio_quality
                 .map(|q| Self::parse_quality(&q)),
-            cover_url: None,
+            cover_url: Self::format_cover_url(cover),
+            isrc: track.isrc,
+            spotify_id: track.spotify_id,
+            album_id: track.album_id,
         }
     }
 
-    fn parse_mpd_manifest(mpd_xml: &str) -> Result<Vec<String>> {
+    fn parse_mpd_manifest(mpd_xml: &str) -> Result<(Vec<String>, Option<String>)> {
         let mut segment_urls = Vec::new();
         let mut base_url: Option<String> = None;
+        let mut mime_type: Option<String> = None;
+
+        let mime_re = Regex::new(r#"mimeType="([^"]+)""#).unwrap();
+        if let Some(caps) = mime_re.captures(mpd_xml) {
+            mime_type = Some(caps[1].to_string());
+        }
 
         let re = Regex::new(r"<BaseURL>([^<]+)</BaseURL>").unwrap();
         if let Some(caps) = re.captures(mpd_xml) {
             base_url = Some(caps[1].to_string());
         }
 
+        // Try to parse SegmentTemplate
+        let template_re = Regex::new(r#"<SegmentTemplate[^>]*initialization="([^"]+)"[^>]*media="([^"]+)"[^>]*startNumber="([^"]+)""#).unwrap();
+        if let Some(caps) = template_re.captures(mpd_xml) {
+            let init_url = caps[1].to_string();
+            let media_url = caps[2].to_string();
+            let start_number: u32 = caps[3].parse().unwrap_or(1);
+
+            let init_full = if let Some(ref base) = base_url {
+                if base.ends_with('/') { format!("{}{}", base, init_url) } else { format!("{}/{}", base, init_url) }
+            } else { init_url };
+            segment_urls.push(init_full);
+
+            // Parse SegmentTimeline to get total segments
+            let s_re = Regex::new(r#"<S\s+d="[^"]+"(?:\s+r="([^"]+)")?\s*/>"#).unwrap();
+            let mut total_segments = 0;
+            for caps in s_re.captures_iter(mpd_xml) {
+                let r: u32 = caps.get(1).map_or(0, |m| m.as_str().parse().unwrap_or(0));
+                total_segments += 1 + r;
+            }
+
+            for i in 0..total_segments {
+                let num = start_number + i;
+                let seg_url = media_url.replace("$Number$", &num.to_string());
+                let seg_full = if let Some(ref base) = base_url {
+                    if base.ends_with('/') { format!("{}{}", base, seg_url) } else { format!("{}/{}", base, seg_url) }
+                } else { seg_url };
+                segment_urls.push(seg_full);
+            }
+            
+            if !segment_urls.is_empty() {
+                return Ok((segment_urls, mime_type));
+            }
+        }
+
+        // Fallback to old behavior
         let segment_re = Regex::new(r#"media="([^"]+)""#).unwrap();
         for caps in segment_re.captures_iter(mpd_xml) {
             let segment = caps[1].to_string();
+            if segment.contains("$Number$") {
+                continue; // Skip if we caught a template incorrectly above
+            }
             if let Some(ref base) = base_url {
                 let full_url = if base.ends_with('/') {
-                    format!(
-                        "{}{}",
-                        base, segment
-                    )
+                    format!("{}{}", base, segment)
                 } else {
-                    format!(
-                        "{}/{}",
-                        base, segment
-                    )
+                    format!("{}/{}", base, segment)
                 };
                 segment_urls.push(full_url);
             } else {
@@ -221,43 +315,58 @@ impl TidalService {
             return Err(DownloadError::XmlParseError("Could not parse segment URLs from MPD manifest".to_string()));
         }
 
-        Ok(segment_urls)
+        Ok((segment_urls, mime_type))
     }
 
     async fn make_request<T: for<'de> Deserialize<'de>>(&self, endpoint: &str) -> Result<T> {
-        let url = format!(
-            "{}{}",
-            self.get_api_base(),
-            endpoint
-        );
+        let mut last_error = None;
+        let total_apis = 1 + FALLBACK_APIS.len();
+        
+        for _ in 0..total_apis {
+            let current_index = CURRENT_API_INDEX.load(Ordering::Relaxed);
+            let api = Self::get_api_base();
+            let url = format!("{}{}", api, endpoint);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await?;
+            let response = match self.client.get(&url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = Some(DownloadError::NetworkError(e));
+                    let _ = CURRENT_API_INDEX.compare_exchange(current_index, (current_index + 1) % total_apis, Ordering::SeqCst, Ordering::SeqCst);
+                    continue;
+                }
+            };
 
-        if response.status() == 429 {
-            return Err(DownloadError::RateLimited);
+            if response.status() == 429 {
+                return Err(DownloadError::RateLimited);
+            }
+
+            let status = response.status();
+            if !status.is_success() {
+                last_error = Some(DownloadError::ServiceUnavailable(format!("API returned status {}", status)));
+                let _ = CURRENT_API_INDEX.compare_exchange(current_index, (current_index + 1) % total_apis, Ordering::SeqCst, Ordering::SeqCst);
+                continue;
+            }
+
+            let text = match response.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    last_error = Some(DownloadError::NetworkError(e));
+                    let _ = CURRENT_API_INDEX.compare_exchange(current_index, (current_index + 1) % total_apis, Ordering::SeqCst, Ordering::SeqCst);
+                    continue;
+                }
+            };
+
+            match serde_json::from_str(&text) {
+                Ok(data) => return Ok(data),
+                Err(e) => {
+                    last_error = Some(DownloadError::JsonParseError(e));
+                    let _ = CURRENT_API_INDEX.compare_exchange(current_index, (current_index + 1) % total_apis, Ordering::SeqCst, Ordering::SeqCst);
+                    continue;
+                }
+            }
         }
 
-        let status = response.status();
-        if !status.is_success() {
-            return Err(
-                DownloadError::ServiceUnavailable(
-                    format!(
-                        "API returned status {}",
-                        status
-                    ),
-                ),
-            );
-        }
-
-        let text = response
-            .text()
-            .await?;
-
-        serde_json::from_str(&text).map_err(|e| DownloadError::JsonParseError(e))
+        Err(last_error.unwrap_or(DownloadError::ServiceUnavailable("All APIs failed".to_string())))
     }
 }
 
@@ -347,7 +456,8 @@ impl MusicService for TidalService {
                 album: response
                     .data
                     .album
-                    .map(|a| a.title),
+                    .as_ref()
+                    .map(|a| a.title.clone()),
                 duration: response
                     .data
                     .duration,
@@ -355,7 +465,16 @@ impl MusicService for TidalService {
                     .data
                     .audio_quality
                     .map(|q| Self::parse_quality(&q)),
-                cover_url: None,
+                cover_url: Self::format_cover_url(response.data.cover.or_else(|| response.data.album.as_ref().and_then(|a| a.cover.clone()))),
+                isrc: response
+                    .data
+                    .isrc,
+                spotify_id: response
+                    .data
+                    .spotify_id,
+                album_id: response
+                    .data
+                    .album_id,
             },
         )
     }
@@ -387,7 +506,7 @@ impl MusicService for TidalService {
                     .number_of_tracks
                     .unwrap_or(0),
                 year: None,
-                cover_url: None,
+                cover_url: Self::format_cover_url(response.data.cover),
             },
         )
     }
@@ -463,7 +582,7 @@ impl MusicService for TidalService {
 
     async fn get_manifest(&self, track_id: u64, quality: AudioQuality) -> Result<DownloadManifest> {
         let endpoint = format!(
-            "/track/?id={}&quality={}",
+            "/track/?id={}&audioquality={}",
             track_id,
             quality.as_str()
         );
@@ -485,15 +604,18 @@ impl MusicService for TidalService {
             .data
             .sample_rate;
 
+        let actual_quality = response.data.audio_quality.as_deref().map(Self::parse_quality).unwrap_or(quality);
+
         if manifest_str.contains("application/dash+xml") || manifest_str.contains("<MPD") {
-            let segment_urls = Self::parse_mpd_manifest(&manifest_str)?;
+            let (segment_urls, dash_mime) = Self::parse_mpd_manifest(&manifest_str)?;
             Ok(
                 DownloadManifest {
                     url: None,
                     segment_urls: Some(segment_urls),
-                    quality,
+                    quality: actual_quality,
                     bit_depth,
                     sample_rate,
+                    mime_type: dash_mime.or_else(|| Some("application/dash+xml".to_string())),
                 },
             )
         } else {
@@ -508,9 +630,10 @@ impl MusicService for TidalService {
                 DownloadManifest {
                     url: Some(url),
                     segment_urls: None,
-                    quality,
+                    quality: actual_quality,
                     bit_depth,
                     sample_rate,
+                    mime_type: manifest_data.mime_type,
                 },
             )
         }

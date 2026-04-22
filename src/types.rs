@@ -168,9 +168,14 @@ pub struct TrackInfo {
     pub title: String,
     pub artist: String,
     pub album: Option<String>,
+    pub album_id: Option<u64>,
     pub duration: Option<u32>,
     pub quality: Option<AudioQuality>,
     pub cover_url: Option<String>,
+    // Optional external identifiers returned by the proxy (when available)
+    pub isrc: Option<String>,
+    #[serde(rename = "spotifyId")]
+    pub spotify_id: Option<String>,
 }
 
 impl TrackInfo {
@@ -221,4 +226,5 @@ pub struct DownloadManifest {
     pub quality: AudioQuality,
     pub bit_depth: Option<u8>,
     pub sample_rate: Option<u32>,
+    pub mime_type: Option<String>,
 }
